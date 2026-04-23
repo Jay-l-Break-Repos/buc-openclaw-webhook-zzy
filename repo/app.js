@@ -17,7 +17,7 @@
 console.log("[carrier] app.js loading, Node.js", process.version);
 
 const express = require("express");
-console.log("[carrier] express loaded, version:", require("./node_modules/express/package.json").version);
+console.log("[carrier] express loaded, version:", require("express/package.json").version);
 
 // ── Schema registry routes ────────────────────────────────────────────────────
 let schemasRouter;
