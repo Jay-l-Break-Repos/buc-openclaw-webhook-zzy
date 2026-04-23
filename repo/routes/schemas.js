@@ -1,5 +1,7 @@
 "use strict";
 
+console.log("[carrier] routes/schemas.js loading...");
+
 /**
  * Schema Registry Routes
  *
@@ -17,6 +19,8 @@ const express = require("express");
 const Ajv = require("ajv");
 const { randomUUID } = require("crypto");
 
+console.log("[carrier] schemas deps loaded: express OK, Ajv type=" + typeof Ajv + ", randomUUID type=" + typeof randomUUID);
+
 const router = express.Router();
 
 // ── In-memory schema registry ─────────────────────────────────────────────────
@@ -25,6 +29,7 @@ const schemaRegistry = new Map();
 
 // ── ajv instance used to validate that submitted schemas are themselves valid ──
 const ajv = new Ajv({ strict: false, allErrors: true });
+console.log("[carrier] ajv instance created OK");
 
 // ── Compiled-validator cache: Map<id, ValidateFunction> ──────────────────────
 const validatorCache = new Map();
@@ -212,4 +217,5 @@ function getSchemaEntry(id) {
   return schemaRegistry.get(id) || null;
 }
 
+console.log("[carrier] routes/schemas.js loaded OK, exporting router");
 module.exports = { router, getSchema, getSchemaEntry };
