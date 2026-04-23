@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY repo/package.json repo/package-lock.json ./
 
-RUN npm ci --legacy-peer-deps
+RUN npm ci
 
 COPY repo/ .
 
