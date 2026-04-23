@@ -5,6 +5,7 @@
  *
  * POST   /api/schemas              — Register a new JSON Schema definition.
  * GET    /api/schemas              — List all registered schemas (returns array directly).
+ * GET    /api/schemas/:id          — Retrieve a single schema by ID (404 if not found).
  * POST   /api/schemas/:id/validate — Validate a JSON payload against a stored schema.
  * DELETE /api/schemas/:id          — Remove a registered schema.
  *
@@ -110,6 +111,25 @@ router.get("/", (req, res) => {
   );
 
   return res.status(200).json(schemas);
+});
+
+// ── GET /api/schemas/:id ──────────────────────────────────────────────────────
+// Returns a single registered schema by its ID.
+//
+// Responses:
+//   200  { id, name, version, schema, registeredAt }  – schema found
+//   404  { error }                                     – schema not found
+router.get("/:id", (req, res) => {
+  const { id } = req.params;
+
+  const entry = schemaRegistry.get(id);
+  if (!entry) {
+    return res.status(404).json({
+      error: `Schema with id '${id}' not found.`,
+    });
+  }
+
+  return res.status(200).json(entry);
 });
 
 // ── POST /api/schemas/:id/validate ────────────────────────────────────────────
