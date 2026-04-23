@@ -14,10 +14,21 @@
 
 "use strict";
 
+console.log("[carrier] app.js loading, Node.js", process.version);
+
 const express = require("express");
+console.log("[carrier] express loaded, version:", require("./node_modules/express/package.json").version);
 
 // ── Schema registry routes ────────────────────────────────────────────────────
-const { router: schemasRouter } = require("./routes/schemas");
+let schemasRouter;
+try {
+  const schemasModule = require("./routes/schemas");
+  schemasRouter = schemasModule.router;
+  console.log("[carrier] schemas router loaded OK");
+} catch (err) {
+  console.error("[carrier] FATAL: Failed to load schemas router:", err);
+  process.exit(1);
+}
 
 // ── Replicate openclaw's vulnerable readBody helper ──────────────────────────
 // Pre-patch: no maxBytes / timeoutMs guard; just reads whatever Express buffered.
@@ -91,9 +102,15 @@ app.post("/webhook/teams",          webhookHandler);
 
 // ── Start server ─────────────────────────────────────────────────────────────
 const PORT = 9090;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`[carrier] openclaw@2026.2.12 vuln app listening on 0.0.0.0:${PORT}`);
-  console.log(`[carrier] GHSA-q447-rj3r-2cgh — unbounded webhook body buffering`);
-  console.log(`[carrier] Endpoints: POST /vuln  POST /webhook/line  POST /webhook/slack ...`);
-  console.log(`[carrier] Schema API: POST /api/schemas  GET /api/schemas  GET /api/schemas/:id  DELETE /api/schemas/:id  POST /api/schemas/:id/validate`);
-});
+console.log("[carrier] Starting server on port", PORT);
+try {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`[carrier] openclaw@2026.2.12 vuln app listening on 0.0.0.0:${PORT}`);
+    console.log(`[carrier] GHSA-q447-rj3r-2cgh — unbounded webhook body buffering`);
+    console.log(`[carrier] Endpoints: POST /vuln  POST /webhook/line  POST /webhook/slack ...`);
+    console.log(`[carrier] Schema API: POST /api/schemas  GET /api/schemas  GET /api/schemas/:id  DELETE /api/schemas/:id  POST /api/schemas/:id/validate`);
+  });
+} catch (err) {
+  console.error("[carrier] FATAL: app.listen failed:", err);
+  process.exit(1);
+}
