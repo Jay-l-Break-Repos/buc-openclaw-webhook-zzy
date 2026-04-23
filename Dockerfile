@@ -1,10 +1,10 @@
-FROM node:20-slim
+FROM node:22-slim
 
 WORKDIR /app
 
 COPY repo/package.json repo/package-lock.json ./
 
-RUN npm install --legacy-peer-deps
+RUN npm ci --legacy-peer-deps
 
 COPY repo/ .
 
