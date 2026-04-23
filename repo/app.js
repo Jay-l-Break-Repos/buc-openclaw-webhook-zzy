@@ -16,6 +16,9 @@
 
 const express = require("express");
 
+// ── Schema registry routes ────────────────────────────────────────────────────
+const { router: schemasRouter } = require("./routes/schemas");
+
 // ── Replicate openclaw's vulnerable readBody helper ──────────────────────────
 // Pre-patch: no maxBytes / timeoutMs guard; just reads whatever Express buffered.
 // Source: openclaw dist/routes-DwIVNSKG.js:121 (identical in routes-CQcgE2QD.js)
@@ -39,6 +42,11 @@ app.use(express.urlencoded({ extended: true })); // also unbounded for form bodi
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
+
+// ── Schema registry API ───────────────────────────────────────────────────────
+// POST /api/schemas  — Register a new JSON Schema definition
+// GET  /api/schemas  — List all registered schemas (name + version)
+app.use("/api/schemas", schemasRouter);
 
 // ── Vulnerable endpoint: mirrors openclaw's real webhook paths ────────────────
 // Any of these paths triggers the same unbounded body-buffering code path.
@@ -84,4 +92,5 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`[carrier] openclaw@2026.2.12 vuln app listening on 0.0.0.0:${PORT}`);
   console.log(`[carrier] GHSA-q447-rj3r-2cgh — unbounded webhook body buffering`);
   console.log(`[carrier] Endpoints: POST /vuln  POST /webhook/line  POST /webhook/slack ...`);
+  console.log(`[carrier] Schema API: POST /api/schemas  GET /api/schemas`);
 });
