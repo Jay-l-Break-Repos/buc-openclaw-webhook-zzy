@@ -3,35 +3,41 @@
 /**
  * Schema Registry Routes
  *
- * POST /api/schemas  — Register a new JSON Schema definition.
- * GET  /api/schemas  — List all registered schemas (name + version).
+ * POST   /api/schemas              — Register a new JSON Schema definition.
+ * GET    /api/schemas              — List all registered schemas (returns array directly).
+ * POST   /api/schemas/:id/validate — Validate a JSON payload against a stored schema.
+ * DELETE /api/schemas/:id          — Remove a registered schema.
  *
  * Schemas are validated with ajv (draft-07 / JSON Schema) before being stored
- * in an in-memory registry keyed by schema name.
+ * in an in-memory registry keyed by a unique id.
  */
 
 const express = require("express");
 const Ajv = require("ajv");
+const { randomUUID } = require("crypto");
 
 const router = express.Router();
 
 // ── In-memory schema registry ─────────────────────────────────────────────────
-// Map<name, { name, version, schema, registeredAt }>
+// Map<id, { id, name, version, schema, registeredAt }>
 const schemaRegistry = new Map();
 
 // ── ajv instance used to validate that submitted schemas are themselves valid ──
 const ajv = new Ajv({ strict: false, allErrors: true });
 
+// ── Compiled-validator cache: Map<id, ValidateFunction> ──────────────────────
+const validatorCache = new Map();
+
 // ── POST /api/schemas ─────────────────────────────────────────────────────────
 // Body (JSON):
-//   name    {string}  required – unique identifier for this schema
+//   name    {string}  required – human-readable identifier for this schema
 //   schema  {object}  required – the JSON Schema definition
 //   version {string}  optional – defaults to "1.0.0"
 //
 // Responses:
-//   201  { message, name, version }   – schema registered successfully
-//   400  { error, details? }          – missing/invalid fields or invalid schema
-//   409  { error }                    – a schema with that name already exists
+//   201  { id, name, version, registeredAt }  – schema registered successfully
+//   400  { error, details? }                  – missing/invalid fields or invalid schema
+//   409  { error }                            – a schema with that name already exists
 router.post("/", (req, res) => {
   const { name, schema, version = "1.0.0" } = req.body || {};
 
@@ -56,15 +62,16 @@ router.post("/", (req, res) => {
 
   const trimmedName = name.trim();
 
-  // ── Duplicate check ─────────────────────────────────────────────────────────
-  if (schemaRegistry.has(trimmedName)) {
-    return res.status(409).json({
-      error: `A schema named '${trimmedName}' is already registered.`,
-    });
+  // ── Duplicate check (by name) ───────────────────────────────────────────────
+  for (const entry of schemaRegistry.values()) {
+    if (entry.name === trimmedName) {
+      return res.status(409).json({
+        error: `A schema named '${trimmedName}' is already registered.`,
+      });
+    }
   }
 
   // ── Validate that the submitted schema is itself a valid JSON Schema ─────────
-  // ajv.validateSchema() checks meta-schema compliance without compiling against data.
   const isValidSchema = ajv.validateSchema(schema);
   if (!isValidSchema) {
     return res.status(400).json({
@@ -74,42 +81,115 @@ router.post("/", (req, res) => {
   }
 
   // ── Store in registry ───────────────────────────────────────────────────────
-  schemaRegistry.set(trimmedName, {
+  const id = randomUUID();
+  const registeredAt = new Date().toISOString();
+
+  schemaRegistry.set(id, {
+    id,
     name: trimmedName,
     version: version.trim(),
     schema,
-    registeredAt: new Date().toISOString(),
+    registeredAt,
   });
 
   return res.status(201).json({
-    message: `Schema '${trimmedName}' registered successfully.`,
+    id,
     name: trimmedName,
     version: version.trim(),
+    registeredAt,
   });
 });
 
 // ── GET /api/schemas ──────────────────────────────────────────────────────────
-// Returns an array of all registered schemas with their name and version.
+// Returns an array of all registered schemas directly (not wrapped in an object).
 //
-// Response 200:
-//   { schemas: [{ name, version, registeredAt }, ...] }
+// Response 200: [ { id, name, version, registeredAt }, ... ]
 router.get("/", (req, res) => {
   const schemas = Array.from(schemaRegistry.values()).map(
-    ({ name, version, registeredAt }) => ({ name, version, registeredAt })
+    ({ id, name, version, registeredAt }) => ({ id, name, version, registeredAt })
   );
 
-  return res.status(200).json({ schemas });
+  return res.status(200).json(schemas);
 });
 
-// ── Export registry accessor for use by other route modules ──────────────────
-// (e.g. the upcoming validation endpoint will need to look up stored schemas)
-function getSchema(name) {
-  const entry = schemaRegistry.get(name);
+// ── POST /api/schemas/:id/validate ────────────────────────────────────────────
+// Validates a JSON payload against the stored schema identified by :id.
+//
+// Body (JSON): the data object to validate
+//
+// Responses:
+//   200  { valid: true }                       – payload is valid
+//   200  { valid: false, errors: [...] }       – payload is invalid (ajv errors)
+//   404  { error }                             – schema not found
+router.post("/:id/validate", (req, res) => {
+  const { id } = req.params;
+
+  const entry = schemaRegistry.get(id);
+  if (!entry) {
+    return res.status(404).json({
+      error: `Schema with id '${id}' not found.`,
+    });
+  }
+
+  // Retrieve or compile the validator for this schema
+  let validate = validatorCache.get(id);
+  if (!validate) {
+    try {
+      validate = ajv.compile(entry.schema);
+      validatorCache.set(id, validate);
+    } catch (err) {
+      return res.status(500).json({
+        error: "Failed to compile schema for validation.",
+        details: err.message,
+      });
+    }
+  }
+
+  const data = req.body;
+  const valid = validate(data);
+
+  if (valid) {
+    return res.status(200).json({ valid: true });
+  }
+
+  return res.status(200).json({
+    valid: false,
+    errors: validate.errors,
+  });
+});
+
+// ── DELETE /api/schemas/:id ───────────────────────────────────────────────────
+// Removes a registered schema from the registry.
+//
+// Responses:
+//   200  { message }  – schema deleted successfully
+//   404  { error }    – schema not found
+router.delete("/:id", (req, res) => {
+  const { id } = req.params;
+
+  if (!schemaRegistry.has(id)) {
+    return res.status(404).json({
+      error: `Schema with id '${id}' not found.`,
+    });
+  }
+
+  const entry = schemaRegistry.get(id);
+  schemaRegistry.delete(id);
+  validatorCache.delete(id);
+
+  return res.status(200).json({
+    message: `Schema '${entry.name}' (id: ${id}) deleted successfully.`,
+  });
+});
+
+// ── Export registry accessors for use by other route modules ─────────────────
+function getSchema(id) {
+  const entry = schemaRegistry.get(id);
   return entry ? entry.schema : null;
 }
 
-function getSchemaEntry(name) {
-  return schemaRegistry.get(name) || null;
+function getSchemaEntry(id) {
+  return schemaRegistry.get(id) || null;
 }
 
 module.exports = { router, getSchema, getSchemaEntry };
