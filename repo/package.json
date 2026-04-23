@@ -4,6 +4,7 @@
   "main": "app.js",
   "dependencies": {
     "ajv": "^8.17.1",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "openclaw": "^2026.2.12"
   }
 }
