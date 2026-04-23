@@ -44,8 +44,11 @@ app.get("/health", (req, res) => {
 });
 
 // ── Schema registry API ───────────────────────────────────────────────────────
-// POST /api/schemas  — Register a new JSON Schema definition
-// GET  /api/schemas  — List all registered schemas (name + version)
+// POST   /api/schemas        — Register a new JSON Schema definition
+// GET    /api/schemas        — List all registered schemas (name + version)
+// GET    /api/schemas/:id    — Retrieve a single schema by ID (404 if not found)
+// POST   /api/schemas/:id/validate — Validate a payload against a stored schema
+// DELETE /api/schemas/:id    — Remove a registered schema
 app.use("/api/schemas", schemasRouter);
 
 // ── Vulnerable endpoint: mirrors openclaw's real webhook paths ────────────────
@@ -92,5 +95,5 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`[carrier] openclaw@2026.2.12 vuln app listening on 0.0.0.0:${PORT}`);
   console.log(`[carrier] GHSA-q447-rj3r-2cgh — unbounded webhook body buffering`);
   console.log(`[carrier] Endpoints: POST /vuln  POST /webhook/line  POST /webhook/slack ...`);
-  console.log(`[carrier] Schema API: POST /api/schemas  GET /api/schemas`);
+  console.log(`[carrier] Schema API: POST /api/schemas  GET /api/schemas  GET /api/schemas/:id  DELETE /api/schemas/:id  POST /api/schemas/:id/validate`);
 });
