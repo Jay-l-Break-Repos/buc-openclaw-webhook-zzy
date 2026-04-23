@@ -49,7 +49,11 @@ const app = express();
 app.use(express.json());          // ← no `limit` option — this IS the vulnerability
 app.use(express.urlencoded({ extended: true })); // also unbounded for form bodies
 
-// ── Health check ─────────────────────────────────────────────────────────────
+// ── Root + Health check ───────────────────────────────────────────────────────
+app.get("/", (req, res) => {
+  res.json({ status: "ok", app: "openclaw-carrier", version: "2026.2.12" });
+});
+
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
