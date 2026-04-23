@@ -2,9 +2,9 @@ FROM node:22-slim
 
 WORKDIR /app
 
-COPY repo/package.json repo/package-lock.json ./
+COPY repo/package.json ./
 
-RUN npm ci
+RUN npm install
 
 COPY repo/ .
 
