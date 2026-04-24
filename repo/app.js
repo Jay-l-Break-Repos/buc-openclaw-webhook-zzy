@@ -15,6 +15,7 @@
 "use strict";
 
 const express = require("express");
+const schemasRouter = require("./schemasRouter");
 
 // ── Replicate openclaw's vulnerable readBody helper ──────────────────────────
 // Pre-patch: no maxBytes / timeoutMs guard; just reads whatever Express buffered.
@@ -39,6 +40,9 @@ app.use(express.urlencoded({ extended: true })); // also unbounded for form bodi
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
+
+// ── JSON Schema management ───────────────────────────────────────────────────
+app.use("/api/schemas", schemasRouter);
 
 // ── Vulnerable endpoint: mirrors openclaw's real webhook paths ────────────────
 // Any of these paths triggers the same unbounded body-buffering code path.
