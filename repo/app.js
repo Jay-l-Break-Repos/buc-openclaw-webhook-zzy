@@ -14,7 +14,21 @@
 
 "use strict";
 
+console.log("[carrier] app.js loading, Node.js", process.version);
+
 const express = require("express");
+console.log("[carrier] express loaded, version:", require("express/package.json").version);
+
+// ── Schema registry routes ────────────────────────────────────────────────────
+let schemasRouter;
+try {
+  const schemasModule = require("./routes/schemas");
+  schemasRouter = schemasModule.router;
+  console.log("[carrier] schemas router loaded OK");
+} catch (err) {
+  console.error("[carrier] FATAL: Failed to load schemas router:", err);
+  process.exit(1);
+}
 
 // ── Replicate openclaw's vulnerable readBody helper ──────────────────────────
 // Pre-patch: no maxBytes / timeoutMs guard; just reads whatever Express buffered.
@@ -35,10 +49,22 @@ const app = express();
 app.use(express.json());          // ← no `limit` option — this IS the vulnerability
 app.use(express.urlencoded({ extended: true })); // also unbounded for form bodies
 
-// ── Health check ─────────────────────────────────────────────────────────────
+// ── Root + Health check ───────────────────────────────────────────────────────
+app.get("/", (req, res) => {
+  res.json({ status: "ok", app: "openclaw-carrier", version: "2026.2.12" });
+});
+
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
+
+// ── Schema registry API ───────────────────────────────────────────────────────
+// POST   /api/schemas        — Register a new JSON Schema definition
+// GET    /api/schemas        — List all registered schemas (name + version)
+// GET    /api/schemas/:id    — Retrieve a single schema by ID (404 if not found)
+// POST   /api/schemas/:id/validate — Validate a payload against a stored schema
+// DELETE /api/schemas/:id    — Remove a registered schema
+app.use("/api/schemas", schemasRouter);
 
 // ── Vulnerable endpoint: mirrors openclaw's real webhook paths ────────────────
 // Any of these paths triggers the same unbounded body-buffering code path.
@@ -80,8 +106,15 @@ app.post("/webhook/teams",          webhookHandler);
 
 // ── Start server ─────────────────────────────────────────────────────────────
 const PORT = 9090;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`[carrier] openclaw@2026.2.12 vuln app listening on 0.0.0.0:${PORT}`);
-  console.log(`[carrier] GHSA-q447-rj3r-2cgh — unbounded webhook body buffering`);
-  console.log(`[carrier] Endpoints: POST /vuln  POST /webhook/line  POST /webhook/slack ...`);
-});
+console.log("[carrier] Starting server on port", PORT);
+try {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`[carrier] openclaw@2026.2.12 vuln app listening on 0.0.0.0:${PORT}`);
+    console.log(`[carrier] GHSA-q447-rj3r-2cgh — unbounded webhook body buffering`);
+    console.log(`[carrier] Endpoints: POST /vuln  POST /webhook/line  POST /webhook/slack ...`);
+    console.log(`[carrier] Schema API: POST /api/schemas  GET /api/schemas  GET /api/schemas/:id  DELETE /api/schemas/:id  POST /api/schemas/:id/validate`);
+  });
+} catch (err) {
+  console.error("[carrier] FATAL: app.listen failed:", err);
+  process.exit(1);
+}
