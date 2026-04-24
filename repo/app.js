@@ -11,6 +11,76 @@ const crypto = require("crypto");
 // ── In-memory schema store ───────────────────────────────────────────────────
 const schemas = new Map();
 
+// Valid JSON Schema types
+const VALID_SCHEMA_TYPES = ["object", "array", "string", "number", "integer", "boolean", "null"];
+
+/**
+ * Validate that a schema definition is a valid JSON Schema.
+ * Returns an array of error strings, or empty array if valid.
+ */
+function validateJsonSchema(schema, path) {
+  path = path || "";
+  const errors = [];
+
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    errors.push((path || "schema") + " must be an object");
+    return errors;
+  }
+
+  // Validate "type" keyword
+  if ("type" in schema) {
+    if (typeof schema.type === "string") {
+      if (!VALID_SCHEMA_TYPES.includes(schema.type)) {
+        errors.push((path ? path + "." : "") + "type: invalid type value '" + schema.type + "'");
+      }
+    } else if (Array.isArray(schema.type)) {
+      for (const t of schema.type) {
+        if (!VALID_SCHEMA_TYPES.includes(t)) {
+          errors.push((path ? path + "." : "") + "type: invalid type value '" + t + "'");
+        }
+      }
+    } else {
+      errors.push((path ? path + "." : "") + "type must be a string or array");
+    }
+  }
+
+  // Validate "required" keyword
+  if ("required" in schema) {
+    if (!Array.isArray(schema.required)) {
+      errors.push((path ? path + "." : "") + "required must be an array");
+    } else {
+      for (const r of schema.required) {
+        if (typeof r !== "string") {
+          errors.push((path ? path + "." : "") + "required items must be strings");
+          break;
+        }
+      }
+    }
+  }
+
+  // Validate "properties" keyword (recurse)
+  if ("properties" in schema && schema.properties) {
+    if (typeof schema.properties !== "object" || Array.isArray(schema.properties)) {
+      errors.push((path ? path + "." : "") + "properties must be an object");
+    } else {
+      for (const [key, propSchema] of Object.entries(schema.properties)) {
+        const propErrors = validateJsonSchema(propSchema, (path ? path + "." : "") + "properties." + key);
+        errors.push(...propErrors);
+      }
+    }
+  }
+
+  // Validate "items" keyword (recurse)
+  if ("items" in schema && schema.items) {
+    if (typeof schema.items === "object" && !Array.isArray(schema.items)) {
+      const itemErrors = validateJsonSchema(schema.items, (path ? path + "." : "") + "items");
+      errors.push(...itemErrors);
+    }
+  }
+
+  return errors;
+}
+
 // ── Replicate openclaw's vulnerable readBody helper ──────────────────────────
 function readBody(req) {
   const body = req.body;
@@ -49,6 +119,12 @@ app.post("/api/schemas", (req, res) => {
   }
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
     return res.status(400).json({ error: "Missing or invalid 'schema' field" });
+  }
+
+  // Validate the schema definition itself
+  const schemaErrors = validateJsonSchema(schema);
+  if (schemaErrors.length > 0) {
+    return res.status(400).json({ error: "Invalid JSON Schema", details: schemaErrors });
   }
 
   const id = crypto.randomUUID();
