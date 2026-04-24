@@ -100,10 +100,47 @@ function listSchemas() {
   return Array.from(schemas.values());
 }
 
+/**
+ * Validate a payload against a stored schema.
+ *
+ * @param {string} id - The schema ID to validate against
+ * @param {*} payload - The data to validate
+ * @returns {{ valid: boolean, errors: object[]|null }}
+ * @throws {Error} When the schema ID is not found
+ */
+function validatePayload(id, payload) {
+  const entry = schemas.get(id);
+  if (!entry) {
+    const error = new Error("Schema not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const validate = ajv.compile(entry.schema);
+  const valid = validate(payload);
+
+  return {
+    valid,
+    errors: valid ? null : validate.errors,
+  };
+}
+
+/**
+ * Delete a stored schema by ID.
+ *
+ * @param {string} id
+ * @returns {boolean} true if the schema was found and deleted, false otherwise
+ */
+function deleteSchema(id) {
+  return schemas.delete(id);
+}
+
 module.exports = {
   registerSchema,
   getSchema,
   listSchemas,
+  validatePayload,
+  deleteSchema,
   // Exposed for testing convenience
   _schemas: schemas,
   _ajv: ajv,
