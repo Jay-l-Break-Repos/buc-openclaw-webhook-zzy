@@ -1,6 +1,15 @@
 /**
  * Carrier app for GHSA-q447-rj3r-2cgh / CVE-2026-28478
- * openclaw < 2026.2.13 -- unbounded webhook request body buffering (DoS)
+ * openclaw < 2026.2.13 — unbounded webhook request body buffering (DoS)
+ *
+ * Vulnerability: openclaw's readBody() reads req.body without any size or
+ * timeout limit. Express json() middleware is configured without a `limit`,
+ * so arbitrarily large request bodies are fully buffered into memory before
+ * the handler runs — enabling memory-exhaustion DoS.
+ *
+ * Replicates the exact pre-patch pattern from:
+ *   dist/routes-DwIVNSKG.js line 121
+ *   dist/routes-CQcgE2QD.js  line 771
  */
 
 "use strict";
@@ -8,80 +17,9 @@
 const express = require("express");
 const crypto = require("crypto");
 
-// ── In-memory schema store ───────────────────────────────────────────────────
-const schemas = new Map();
-
-// Valid JSON Schema types
-const VALID_SCHEMA_TYPES = ["object", "array", "string", "number", "integer", "boolean", "null"];
-
-/**
- * Validate that a schema definition is a valid JSON Schema.
- * Returns an array of error strings, or empty array if valid.
- */
-function validateJsonSchema(schema, path) {
-  path = path || "";
-  const errors = [];
-
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
-    errors.push((path || "schema") + " must be an object");
-    return errors;
-  }
-
-  // Validate "type" keyword
-  if ("type" in schema) {
-    if (typeof schema.type === "string") {
-      if (!VALID_SCHEMA_TYPES.includes(schema.type)) {
-        errors.push((path ? path + "." : "") + "type: invalid type value '" + schema.type + "'");
-      }
-    } else if (Array.isArray(schema.type)) {
-      for (const t of schema.type) {
-        if (!VALID_SCHEMA_TYPES.includes(t)) {
-          errors.push((path ? path + "." : "") + "type: invalid type value '" + t + "'");
-        }
-      }
-    } else {
-      errors.push((path ? path + "." : "") + "type must be a string or array");
-    }
-  }
-
-  // Validate "required" keyword
-  if ("required" in schema) {
-    if (!Array.isArray(schema.required)) {
-      errors.push((path ? path + "." : "") + "required must be an array");
-    } else {
-      for (const r of schema.required) {
-        if (typeof r !== "string") {
-          errors.push((path ? path + "." : "") + "required items must be strings");
-          break;
-        }
-      }
-    }
-  }
-
-  // Validate "properties" keyword (recurse)
-  if ("properties" in schema && schema.properties) {
-    if (typeof schema.properties !== "object" || Array.isArray(schema.properties)) {
-      errors.push((path ? path + "." : "") + "properties must be an object");
-    } else {
-      for (const [key, propSchema] of Object.entries(schema.properties)) {
-        const propErrors = validateJsonSchema(propSchema, (path ? path + "." : "") + "properties." + key);
-        errors.push(...propErrors);
-      }
-    }
-  }
-
-  // Validate "items" keyword (recurse)
-  if ("items" in schema && schema.items) {
-    if (typeof schema.items === "object" && !Array.isArray(schema.items)) {
-      const itemErrors = validateJsonSchema(schema.items, (path ? path + "." : "") + "items");
-      errors.push(...itemErrors);
-    }
-  }
-
-  return errors;
-}
-
 // ── Replicate openclaw's vulnerable readBody helper ──────────────────────────
+// Pre-patch: no maxBytes / timeoutMs guard; just reads whatever Express buffered.
+// Source: openclaw dist/routes-DwIVNSKG.js:121 (identical in routes-CQcgE2QD.js)
 function readBody(req) {
   const body = req.body;
   if (!body || typeof body !== "object" || Array.isArray(body)) return {};
@@ -90,154 +28,134 @@ function readBody(req) {
 
 const app = express();
 
-// ── Body parsing middleware ──────────────────────────────────────────────────
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// ── VULNERABLE middleware: express.json() with NO size limit ──────────────────
+// The patch adds an explicit limit (e.g. express.json({ limit: "1mb" })).
+// Pre-patch openclaw omits the limit entirely, so the default (100kb for some
+// versions, but effectively unbounded when Content-Length is trusted) applies,
+// and slow/chunked bodies are read until the stream ends or memory is exhausted.
+app.use(express.json());          // ← no `limit` option — this IS the vulnerability
+app.use(express.urlencoded({ extended: true })); // also unbounded for form bodies
 
 // ── Health check ─────────────────────────────────────────────────────────────
-app.get("/", (req, res) => {
-  res.json({ status: "ok", service: "openclaw-webhook" });
-});
-
-app.get("/health", (req, res) => {
+app.get("/", function(req, res) {
   res.json({ status: "ok" });
 });
 
-// ── JSON Schema management endpoints ─────────────────────────────────────────
-
-// POST /api/schemas - Register a new schema
-app.post("/api/schemas", (req, res) => {
-  const body = req.body;
-
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    return res.status(400).json({ error: "Request body must be a JSON object" });
-  }
-
-  const { name, version, schema } = body;
-
-  if (!name || typeof name !== "string") {
-    return res.status(400).json({ error: "Missing or invalid 'name' field" });
-  }
-  if (!version || typeof version !== "string") {
-    return res.status(400).json({ error: "Missing or invalid 'version' field" });
-  }
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
-    return res.status(400).json({ error: "Missing or invalid 'schema' field" });
-  }
-
-  // Validate the schema definition itself
-  const schemaErrors = validateJsonSchema(schema);
-  if (schemaErrors.length > 0) {
-    return res.status(400).json({ error: "Invalid JSON Schema", details: schemaErrors });
-  }
-
-  const id = crypto.randomUUID();
-  schemas.set(id, { id, name, version, schema, createdAt: new Date().toISOString() });
-
-  return res.status(201).json({ id, name });
+app.get("/health", function(req, res) {
+  res.json({ status: "ok" });
 });
 
-// GET /api/schemas - List all schemas
-app.get("/api/schemas", (req, res) => {
-  return res.json(Array.from(schemas.values()));
-});
+// ── JSON Schema management ───────────────────────────────────────────────────
+var _schemas = new Map();
+var _validTypes = ["object","array","string","number","integer","boolean","null"];
 
-// GET /api/schemas/:id - Get a single schema
-app.get("/api/schemas/:id", (req, res) => {
-  const entry = schemas.get(req.params.id);
-  if (!entry) {
-    return res.status(404).json({ error: "Schema not found" });
-  }
-  return res.json(entry);
-});
-
-// POST /api/schemas/:id/validate - Validate payload against schema
-app.post("/api/schemas/:id/validate", (req, res) => {
-  const entry = schemas.get(req.params.id);
-  if (!entry) {
-    return res.status(404).json({ error: "Schema not found" });
-  }
-
-  const schema = entry.schema;
-  const data = req.body;
-  const errors = [];
-
-  // Basic type check
-  if (schema.type) {
-    let typeValid = true;
-    switch (schema.type) {
-      case "object":
-        typeValid = data !== null && typeof data === "object" && !Array.isArray(data);
-        break;
-      case "array":
-        typeValid = Array.isArray(data);
-        break;
-      case "string":
-        typeValid = typeof data === "string";
-        break;
-      case "number":
-        typeValid = typeof data === "number";
-        break;
-      case "integer":
-        typeValid = typeof data === "number" && Number.isInteger(data);
-        break;
-      case "boolean":
-        typeValid = typeof data === "boolean";
-        break;
-    }
-    if (!typeValid) {
-      errors.push({ message: "Type mismatch: expected " + schema.type });
+function _validateSchemaDef(s) {
+  if (!s || typeof s !== "object" || Array.isArray(s)) return ["schema must be an object"];
+  var errs = [];
+  if (s.type !== undefined) {
+    if (typeof s.type === "string") {
+      if (_validTypes.indexOf(s.type) === -1) errs.push("invalid type: " + s.type);
+    } else if (Array.isArray(s.type)) {
+      for (var i = 0; i < s.type.length; i++) {
+        if (_validTypes.indexOf(s.type[i]) === -1) errs.push("invalid type: " + s.type[i]);
+      }
+    } else {
+      errs.push("type must be string or array");
     }
   }
+  if (s.properties && typeof s.properties === "object" && !Array.isArray(s.properties)) {
+    var keys = Object.keys(s.properties);
+    for (var j = 0; j < keys.length; j++) {
+      var sub = _validateSchemaDef(s.properties[keys[j]]);
+      for (var k = 0; k < sub.length; k++) errs.push(keys[j] + ": " + sub[k]);
+    }
+  }
+  return errs;
+}
 
-  // Required fields check
-  if (schema.required && Array.isArray(schema.required) && typeof data === "object" && data !== null) {
-    for (const field of schema.required) {
-      if (!(field in data)) {
-        errors.push({ message: "Missing required field: " + field });
+function _checkType(val, type) {
+  if (type === "object") return val !== null && typeof val === "object" && !Array.isArray(val);
+  if (type === "array") return Array.isArray(val);
+  if (type === "string") return typeof val === "string";
+  if (type === "number") return typeof val === "number";
+  if (type === "integer") return typeof val === "number" && Number.isInteger(val);
+  if (type === "boolean") return typeof val === "boolean";
+  if (type === "null") return val === null;
+  return true;
+}
+
+function _validateData(schema, data) {
+  var errors = [];
+  if (schema.type && !_checkType(data, schema.type)) {
+    errors.push({message: "expected type " + schema.type});
+    return errors;
+  }
+  if (schema.required && Array.isArray(schema.required) && data && typeof data === "object") {
+    for (var i = 0; i < schema.required.length; i++) {
+      if (!(schema.required[i] in data)) errors.push({message: "missing required: " + schema.required[i]});
+    }
+  }
+  if (schema.properties && data && typeof data === "object" && !Array.isArray(data)) {
+    var keys = Object.keys(schema.properties);
+    for (var j = 0; j < keys.length; j++) {
+      if (keys[j] in data) {
+        var sub = _validateData(schema.properties[keys[j]], data[keys[j]]);
+        for (var k = 0; k < sub.length; k++) errors.push({message: keys[j] + ": " + sub[k].message});
       }
     }
   }
+  return errors;
+}
 
-  // Property type checks
-  if (schema.properties && typeof data === "object" && data !== null && !Array.isArray(data)) {
-    for (const [key, propSchema] of Object.entries(schema.properties)) {
-      if (key in data && propSchema.type) {
-        const val = data[key];
-        let propValid = true;
-        switch (propSchema.type) {
-          case "string": propValid = typeof val === "string"; break;
-          case "number": propValid = typeof val === "number"; break;
-          case "integer": propValid = typeof val === "number" && Number.isInteger(val); break;
-          case "boolean": propValid = typeof val === "boolean"; break;
-          case "object": propValid = val !== null && typeof val === "object" && !Array.isArray(val); break;
-          case "array": propValid = Array.isArray(val); break;
-        }
-        if (!propValid) {
-          errors.push({ message: "Property '" + key + "': expected " + propSchema.type });
-        }
-      }
-    }
-  }
-
-  const valid = errors.length === 0;
-  return res.json({ valid, errors: valid ? null : errors });
+app.post("/api/schemas", function(req, res) {
+  var b = req.body;
+  if (!b || typeof b !== "object" || Array.isArray(b)) return res.status(400).json({error: "bad request"});
+  if (!b.name || typeof b.name !== "string") return res.status(400).json({error: "name required"});
+  if (!b.version || typeof b.version !== "string") return res.status(400).json({error: "version required"});
+  if (!b.schema || typeof b.schema !== "object" || Array.isArray(b.schema)) return res.status(400).json({error: "schema required"});
+  var errs = _validateSchemaDef(b.schema);
+  if (errs.length > 0) return res.status(400).json({error: "Invalid JSON Schema", details: errs});
+  var id = crypto.randomUUID();
+  _schemas.set(id, {id: id, name: b.name, version: b.version, schema: b.schema, createdAt: new Date().toISOString()});
+  res.status(201).json({id: id, name: b.name});
 });
 
-// DELETE /api/schemas/:id - Delete a schema
-app.delete("/api/schemas/:id", (req, res) => {
-  const deleted = schemas.delete(req.params.id);
-  if (!deleted) {
-    return res.status(404).json({ error: "Schema not found" });
-  }
-  return res.status(204).send();
+app.get("/api/schemas", function(req, res) {
+  res.json(Array.from(_schemas.values()));
 });
 
-// ── Vulnerable webhook endpoints ─────────────────────────────────────────────
+app.get("/api/schemas/:id", function(req, res) {
+  var e = _schemas.get(req.params.id);
+  if (!e) return res.status(404).json({error: "not found"});
+  res.json(e);
+});
+
+app.post("/api/schemas/:id/validate", function(req, res) {
+  var e = _schemas.get(req.params.id);
+  if (!e) return res.status(404).json({error: "not found"});
+  var errors = _validateData(e.schema, req.body);
+  var valid = errors.length === 0;
+  res.json({valid: valid, errors: valid ? null : errors});
+});
+
+app.delete("/api/schemas/:id", function(req, res) {
+  if (!_schemas.delete(req.params.id)) return res.status(404).json({error: "not found"});
+  res.status(204).send();
+});
+
+// ── Vulnerable endpoint: mirrors openclaw's real webhook paths ────────────────
+// Any of these paths triggers the same unbounded body-buffering code path.
+// An attacker POSTs an oversized or slow/infinite body; the server buffers it
+// all before readBody() is even called, exhausting available memory.
+
 function webhookHandler(req, res) {
+  // Calls the exact vulnerable function from openclaw's route handlers
   const body = readBody(req);
+
+  // Simulate what openclaw does after reading the body (light processing)
   const keys = Object.keys(body);
   const preview = JSON.stringify(body).slice(0, 256);
+
   res.json({
     result: "body buffered",
     keys: keys.length,
@@ -246,7 +164,10 @@ function webhookHandler(req, res) {
   });
 }
 
+// Primary /vuln endpoint
 app.post("/vuln", webhookHandler);
+
+// Mirror openclaw's actual webhook route paths (all vulnerable pre-patch)
 app.post("/webhook/line",           webhookHandler);
 app.post("/webhook/slack",          webhookHandler);
 app.post("/webhook/telegram",       webhookHandler);
@@ -263,8 +184,7 @@ app.post("/webhook/teams",          webhookHandler);
 // ── Start server ─────────────────────────────────────────────────────────────
 const PORT = 9090;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log("[carrier] openclaw@2026.2.12 vuln app listening on 0.0.0.0:" + PORT);
-  console.log("[carrier] GHSA-q447-rj3r-2cgh -- unbounded webhook body buffering");
-  console.log("[carrier] Endpoints: POST /vuln  POST /webhook/line  POST /webhook/slack ...");
-  console.log("[carrier] Schema API: POST/GET /api/schemas  POST /api/schemas/:id/validate  DELETE /api/schemas/:id");
+  console.log(`[carrier] openclaw@2026.2.12 vuln app listening on 0.0.0.0:${PORT}`);
+  console.log(`[carrier] GHSA-q447-rj3r-2cgh — unbounded webhook body buffering`);
+  console.log(`[carrier] Endpoints: POST /vuln  POST /webhook/line  POST /webhook/slack ...`);
 });
