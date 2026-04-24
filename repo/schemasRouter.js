@@ -14,33 +14,36 @@ const router = express.Router();
 /**
  * POST /api/schemas
  *
- * Accepts a JSON Schema definition in the request body, validates it using
- * ajv, stores it in memory with a generated ID, and returns the ID.
+ * Accepts a schema entry with { name, version, schema } in the request body.
+ * Validates the embedded JSON Schema using ajv, stores the full entry in
+ * memory with a generated ID, and returns { id, name }.
  *
- * Request body: a valid JSON Schema object (e.g. { "type": "object", ... })
+ * Request body:
+ *   {
+ *     "name": "webhook-event",
+ *     "version": "1.0",
+ *     "schema": { "type": "object", "properties": { ... } }
+ *   }
  *
  * Success response (201):
- *   { "id": "<uuid>", "message": "Schema registered successfully" }
+ *   { "id": "<uuid>", "name": "webhook-event" }
  *
  * Error responses:
- *   400 — Request body is missing or not a valid JSON Schema
+ *   400 — Request body is missing, malformed, or contains an invalid JSON Schema
  */
 router.post("/", (req, res) => {
-  const schema = req.body;
+  const body = req.body;
 
   // Basic sanity check: body must be a non-null, non-array object
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
     return res.status(400).json({
-      error: "Request body must be a JSON Schema object",
+      error: "Request body must be a JSON object with name, version, and schema fields",
     });
   }
 
   try {
-    const { id } = registerSchema(schema);
-    return res.status(201).json({
-      id,
-      message: "Schema registered successfully",
-    });
+    const { id, name } = registerSchema(body);
+    return res.status(201).json({ id, name });
   } catch (err) {
     return res.status(400).json({
       error: err.message,

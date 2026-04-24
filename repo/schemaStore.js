@@ -14,8 +14,8 @@ const crypto = require("crypto");
 const ajv = new Ajv({ allErrors: true });
 
 /**
- * In-memory map of schemaId → { id, schema, createdAt }
- * @type {Map<string, { id: string, schema: object, createdAt: string }>}
+ * In-memory map of schemaId → { id, name, version, schema, createdAt }
+ * @type {Map<string, { id: string, name: string, version: string, schema: object, createdAt: string }>}
  */
 const schemas = new Map();
 
@@ -30,14 +30,36 @@ function generateId() {
 }
 
 /**
- * Validate that a given object is a valid JSON Schema (draft-07 / 2020-12
- * depending on ajv defaults) and store it in memory.
+ * Register a named schema entry. Validates the embedded JSON Schema using ajv,
+ * then stores the full entry (name, version, schema) in memory.
  *
- * @param {object} schema - The JSON Schema definition to register
- * @returns {{ id: string }} The generated schema ID on success
- * @throws {{ message: string, errors: object[] }} When the schema is invalid
+ * @param {object} entry - The schema entry to register
+ * @param {string} entry.name - Human-readable name for the schema
+ * @param {string} entry.version - Version string (e.g. "1.0")
+ * @param {object} entry.schema - The JSON Schema definition to validate and store
+ * @returns {{ id: string, name: string }} The generated schema ID and name on success
+ * @throws {Error} When required fields are missing or the schema is invalid
  */
-function registerSchema(schema) {
+function registerSchema({ name, version, schema }) {
+  // Validate required fields
+  if (!name || typeof name !== "string") {
+    const error = new Error("Missing or invalid 'name' field");
+    error.validationErrors = [{ message: "'name' is required and must be a string" }];
+    throw error;
+  }
+
+  if (!version || typeof version !== "string") {
+    const error = new Error("Missing or invalid 'version' field");
+    error.validationErrors = [{ message: "'version' is required and must be a string" }];
+    throw error;
+  }
+
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    const error = new Error("Missing or invalid 'schema' field");
+    error.validationErrors = [{ message: "'schema' is required and must be a JSON Schema object" }];
+    throw error;
+  }
+
   // Attempt to compile — ajv throws if the schema itself is invalid
   try {
     ajv.compile(schema);
@@ -50,18 +72,20 @@ function registerSchema(schema) {
   const id = generateId();
   schemas.set(id, {
     id,
+    name,
+    version,
     schema,
     createdAt: new Date().toISOString(),
   });
 
-  return { id };
+  return { id, name };
 }
 
 /**
  * Retrieve a stored schema entry by ID.
  *
  * @param {string} id
- * @returns {{ id: string, schema: object, createdAt: string } | undefined}
+ * @returns {{ id: string, name: string, version: string, schema: object, createdAt: string } | undefined}
  */
 function getSchema(id) {
   return schemas.get(id);
@@ -70,7 +94,7 @@ function getSchema(id) {
 /**
  * Return all stored schemas as an array.
  *
- * @returns {Array<{ id: string, schema: object, createdAt: string }>}
+ * @returns {Array<{ id: string, name: string, version: string, schema: object, createdAt: string }>}
  */
 function listSchemas() {
   return Array.from(schemas.values());
