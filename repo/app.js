@@ -1,25 +1,17 @@
 /**
  * Carrier app for GHSA-q447-rj3r-2cgh / CVE-2026-28478
- * openclaw < 2026.2.13 — unbounded webhook request body buffering (DoS)
- *
- * Vulnerability: openclaw's readBody() reads req.body without any size or
- * timeout limit. Express json() middleware is configured without a `limit`,
- * so arbitrarily large request bodies are fully buffered into memory before
- * the handler runs — enabling memory-exhaustion DoS.
- *
- * Replicates the exact pre-patch pattern from:
- *   dist/routes-DwIVNSKG.js line 121
- *   dist/routes-CQcgE2QD.js  line 771
+ * openclaw < 2026.2.13 -- unbounded webhook request body buffering (DoS)
  */
 
 "use strict";
 
 const express = require("express");
-const schemasRouter = require("./schemasRouter");
+const crypto = require("crypto");
+
+// ── In-memory schema store ───────────────────────────────────────────────────
+const schemas = new Map();
 
 // ── Replicate openclaw's vulnerable readBody helper ──────────────────────────
-// Pre-patch: no maxBytes / timeoutMs guard; just reads whatever Express buffered.
-// Source: openclaw dist/routes-DwIVNSKG.js:121 (identical in routes-CQcgE2QD.js)
 function readBody(req) {
   const body = req.body;
   if (!body || typeof body !== "object" || Array.isArray(body)) return {};
@@ -28,35 +20,144 @@ function readBody(req) {
 
 const app = express();
 
-// ── VULNERABLE middleware: express.json() with NO size limit ──────────────────
-// The patch adds an explicit limit (e.g. express.json({ limit: "1mb" })).
-// Pre-patch openclaw omits the limit entirely, so the default (100kb for some
-// versions, but effectively unbounded when Content-Length is trusted) applies,
-// and slow/chunked bodies are read until the stream ends or memory is exhausted.
-app.use(express.json());          // ← no `limit` option — this IS the vulnerability
-app.use(express.urlencoded({ extended: true })); // also unbounded for form bodies
+// ── Body parsing middleware ──────────────────────────────────────────────────
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // ── Health check ─────────────────────────────────────────────────────────────
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-// ── JSON Schema management ───────────────────────────────────────────────────
-app.use("/api/schemas", schemasRouter);
+// ── JSON Schema management endpoints ─────────────────────────────────────────
 
-// ── Vulnerable endpoint: mirrors openclaw's real webhook paths ────────────────
-// Any of these paths triggers the same unbounded body-buffering code path.
-// An attacker POSTs an oversized or slow/infinite body; the server buffers it
-// all before readBody() is even called, exhausting available memory.
+// POST /api/schemas - Register a new schema
+app.post("/api/schemas", (req, res) => {
+  const body = req.body;
 
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return res.status(400).json({ error: "Request body must be a JSON object" });
+  }
+
+  const { name, version, schema } = body;
+
+  if (!name || typeof name !== "string") {
+    return res.status(400).json({ error: "Missing or invalid 'name' field" });
+  }
+  if (!version || typeof version !== "string") {
+    return res.status(400).json({ error: "Missing or invalid 'version' field" });
+  }
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    return res.status(400).json({ error: "Missing or invalid 'schema' field" });
+  }
+
+  const id = crypto.randomUUID();
+  schemas.set(id, { id, name, version, schema, createdAt: new Date().toISOString() });
+
+  return res.status(201).json({ id, name });
+});
+
+// GET /api/schemas - List all schemas
+app.get("/api/schemas", (req, res) => {
+  return res.json(Array.from(schemas.values()));
+});
+
+// GET /api/schemas/:id - Get a single schema
+app.get("/api/schemas/:id", (req, res) => {
+  const entry = schemas.get(req.params.id);
+  if (!entry) {
+    return res.status(404).json({ error: "Schema not found" });
+  }
+  return res.json(entry);
+});
+
+// POST /api/schemas/:id/validate - Validate payload against schema
+app.post("/api/schemas/:id/validate", (req, res) => {
+  const entry = schemas.get(req.params.id);
+  if (!entry) {
+    return res.status(404).json({ error: "Schema not found" });
+  }
+
+  const schema = entry.schema;
+  const data = req.body;
+  const errors = [];
+
+  // Basic type check
+  if (schema.type) {
+    let typeValid = true;
+    switch (schema.type) {
+      case "object":
+        typeValid = data !== null && typeof data === "object" && !Array.isArray(data);
+        break;
+      case "array":
+        typeValid = Array.isArray(data);
+        break;
+      case "string":
+        typeValid = typeof data === "string";
+        break;
+      case "number":
+        typeValid = typeof data === "number";
+        break;
+      case "integer":
+        typeValid = typeof data === "number" && Number.isInteger(data);
+        break;
+      case "boolean":
+        typeValid = typeof data === "boolean";
+        break;
+    }
+    if (!typeValid) {
+      errors.push({ message: "Type mismatch: expected " + schema.type });
+    }
+  }
+
+  // Required fields check
+  if (schema.required && Array.isArray(schema.required) && typeof data === "object" && data !== null) {
+    for (const field of schema.required) {
+      if (!(field in data)) {
+        errors.push({ message: "Missing required field: " + field });
+      }
+    }
+  }
+
+  // Property type checks
+  if (schema.properties && typeof data === "object" && data !== null && !Array.isArray(data)) {
+    for (const [key, propSchema] of Object.entries(schema.properties)) {
+      if (key in data && propSchema.type) {
+        const val = data[key];
+        let propValid = true;
+        switch (propSchema.type) {
+          case "string": propValid = typeof val === "string"; break;
+          case "number": propValid = typeof val === "number"; break;
+          case "integer": propValid = typeof val === "number" && Number.isInteger(val); break;
+          case "boolean": propValid = typeof val === "boolean"; break;
+          case "object": propValid = val !== null && typeof val === "object" && !Array.isArray(val); break;
+          case "array": propValid = Array.isArray(val); break;
+        }
+        if (!propValid) {
+          errors.push({ message: "Property '" + key + "': expected " + propSchema.type });
+        }
+      }
+    }
+  }
+
+  const valid = errors.length === 0;
+  return res.json({ valid, errors: valid ? null : errors });
+});
+
+// DELETE /api/schemas/:id - Delete a schema
+app.delete("/api/schemas/:id", (req, res) => {
+  const deleted = schemas.delete(req.params.id);
+  if (!deleted) {
+    return res.status(404).json({ error: "Schema not found" });
+  }
+  return res.status(204).send();
+});
+
+// ── Vulnerable webhook endpoints ─────────────────────────────────────────────
 function webhookHandler(req, res) {
-  // Calls the exact vulnerable function from openclaw's route handlers
   const body = readBody(req);
-
-  // Simulate what openclaw does after reading the body (light processing)
   const keys = Object.keys(body);
   const preview = JSON.stringify(body).slice(0, 256);
-
   res.json({
     result: "body buffered",
     keys: keys.length,
@@ -65,10 +166,7 @@ function webhookHandler(req, res) {
   });
 }
 
-// Primary /vuln endpoint
 app.post("/vuln", webhookHandler);
-
-// Mirror openclaw's actual webhook route paths (all vulnerable pre-patch)
 app.post("/webhook/line",           webhookHandler);
 app.post("/webhook/slack",          webhookHandler);
 app.post("/webhook/telegram",       webhookHandler);
@@ -85,7 +183,8 @@ app.post("/webhook/teams",          webhookHandler);
 // ── Start server ─────────────────────────────────────────────────────────────
 const PORT = 9090;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`[carrier] openclaw@2026.2.12 vuln app listening on 0.0.0.0:${PORT}`);
-  console.log(`[carrier] GHSA-q447-rj3r-2cgh — unbounded webhook body buffering`);
-  console.log(`[carrier] Endpoints: POST /vuln  POST /webhook/line  POST /webhook/slack ...`);
+  console.log("[carrier] openclaw@2026.2.12 vuln app listening on 0.0.0.0:" + PORT);
+  console.log("[carrier] GHSA-q447-rj3r-2cgh -- unbounded webhook body buffering");
+  console.log("[carrier] Endpoints: POST /vuln  POST /webhook/line  POST /webhook/slack ...");
+  console.log("[carrier] Schema API: POST/GET /api/schemas  POST /api/schemas/:id/validate  DELETE /api/schemas/:id");
 });

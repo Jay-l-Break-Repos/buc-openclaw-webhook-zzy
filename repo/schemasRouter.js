@@ -1,11 +1,11 @@
 /**
  * Express router for JSON Schema management endpoints.
  *
- * POST   /api/schemas              — Register a new JSON Schema
- * GET    /api/schemas              — List all registered schemas
- * GET    /api/schemas/:id          — Get a single schema by ID
- * POST   /api/schemas/:id/validate — Validate a payload against a schema
- * DELETE /api/schemas/:id          — Delete a schema by ID
+ * POST   /api/schemas              - Register a new JSON Schema
+ * GET    /api/schemas              - List all registered schemas
+ * GET    /api/schemas/:id          - Get a single schema by ID
+ * POST   /api/schemas/:id/validate - Validate a payload against a schema
+ * DELETE /api/schemas/:id          - Delete a schema by ID
  */
 
 "use strict";

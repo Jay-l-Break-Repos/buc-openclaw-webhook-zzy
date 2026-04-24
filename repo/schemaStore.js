@@ -11,7 +11,7 @@
 const crypto = require("crypto");
 
 /**
- * In-memory map of schemaId → { id, name, version, schema, createdAt }
+ * In-memory map of schemaId -> { id, name, version, schema, createdAt }
  * @type {Map<string, object>}
  */
 const schemas = new Map();
